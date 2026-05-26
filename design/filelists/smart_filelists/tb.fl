@@ -1,0 +1,6 @@
++libext+.v+.h+.V+.sv+
+
++incdir+../soc/tb+
+
+-y ../soc/tb
+../soc/tb/tb.v

@@ -1,0 +1,3 @@
+-f ../../design/filelists/smart_filelists/ip.fl
+-f ../../design/filelists/smart_filelists/smart.fl
+-f ../../design/filelists/smart_filelists/tb_verilator.fl

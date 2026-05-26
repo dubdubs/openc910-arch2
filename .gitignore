@@ -1,0 +1,13 @@
+
+# Build/runtime artifacts
+emu/work/*
+!emu/work/.gitkeep
+*.vvp
+*.case.log
+*.elf
+*.obj
+*.hex
+*.pat
+*.o
+*.fsdb
+*.vcd

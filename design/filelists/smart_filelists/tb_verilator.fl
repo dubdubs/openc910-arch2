@@ -1,0 +1,7 @@
++libext+.v+.h+.V+.sv+
+
++incdir+../soc/tb+
+
+-y ../soc/tb
+../soc/tb/tb_verilator.v
+../soc/tb/sim_main1.cpp

@@ -1,0 +1,10 @@
++libext+.v+.h+.V+.sv+
+
+-y ../../design/interconnect/ahb
+-y ../../design/interconnect/apb
+-y ../../design/interconnect/axi
+-y ../../design/soc/src/smart_common
+-y ../../design/peripherals/gpio
+-y ../../common/models/smart_mem_models
+-y ../../design/peripherals/uart
+-y ../../design/peripherals/pmu
