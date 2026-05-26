@@ -15,7 +15,7 @@
 
 #!/bin/csh
 
-setenv TOOL_EXTENSION /home/xylan/local/xuantie-gnu-toolchain/bin
+setenv TOOL_EXTENSION /home/xylan/local/Xuantie-900-gcc-elf-newlib-x86_64-V3.4.0/bin
 echo 'Toolchain path($TOOL_EXTENSION):'
 echo "    $TOOL_EXTENSION"
 

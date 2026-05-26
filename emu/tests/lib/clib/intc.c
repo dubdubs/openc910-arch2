@@ -15,6 +15,7 @@ limitations under the License.
 #include "datatype.h"
 #include "uart.h"
 #include "stdio.h"
+#include <stdint.h>
 
 #define APB_BASE                 0x10000000
 #define INTC_BASE                0x10010000
@@ -22,10 +23,10 @@ limitations under the License.
 //config the interrupt controller
 void ck_intc_init()
 {
-	int *picr = APB_BASE;
+	volatile int *picr = (volatile int *)(uintptr_t)APB_BASE;
         *picr = 0x0;
         
         // Write NIER
-        int *piser = INTC_BASE + 0x10;
+        volatile int *piser = (volatile int *)(uintptr_t)(INTC_BASE + 0x10);
         *piser = 0x3f;
 }

@@ -13,6 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+ #include <stdint.h>
+
 int get_vtimer()
 {
   volatile unsigned int   LoadCount;
@@ -27,10 +29,10 @@ int get_vtimer()
 
 void sim_end()
 {
-  int *END_ADDR;
-  END_ADDR = 0xA001FF48;
+  volatile unsigned int *END_ADDR;
+  END_ADDR = (volatile unsigned int *)(uintptr_t)0xA001FF48u;
   unsigned int END_DATA;
   // END_DATA= 0xFFF;
-  END_DATA= 0x444333222;
+  END_DATA = 0x444333222u;
   *END_ADDR = END_DATA;
 }
