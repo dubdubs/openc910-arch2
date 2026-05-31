@@ -48,6 +48,12 @@ limitations under the License.
 `define clk_en              `CPU_TOP.axim_clk_en
 `define CP0_RSLT_VLD        `CPU_TOP.x_ct_top_0.x_ct_core.x_ct_cp0_top.x_ct_cp0_iui.cp0_iu_ex3_rslt_vld
 `define CP0_RSLT            `CPU_TOP.x_ct_top_0.x_ct_core.x_ct_cp0_top.x_ct_cp0_iui.cp0_iu_ex3_rslt_data[63:0]
+`define CORE0_TOP           `CPU_TOP.x_ct_top_0
+`define CORE0_HAD_REGS      `CORE0_TOP.x_ct_had_private_top.x_ct_had_regs
+`define CORE0_HAD_CTRL      `CORE0_TOP.x_ct_had_private_top.x_ct_had_ctrl
+`define CORE0_CP0_TOP       `CORE0_TOP.x_ct_core.x_ct_cp0_top
+`define CORE0_CP0_REGS      `CORE0_CP0_TOP.x_ct_cp0_regs
+`define CORE0_RTU_RETIRE    `CORE0_TOP.x_ct_core.x_ct_rtu_top.x_ct_rtu_retire
 
 // `define APB_BASE_ADDR       40'h4000000000
 `define APB_BASE_ADDR       40'hb0000000
@@ -67,6 +73,224 @@ module tb();
   
   wire uart0_sin;
   wire [7:0]b_pad_gpio_porta;
+
+  //-------------------------------------------------------------------------
+  // QEMU snapshot restore knobs
+  // Fill these values from a known-good QEMU checkpoint before running.
+  //-------------------------------------------------------------------------
+  localparam CORE0_SNAPSHOT_ENABLE          = 1'b1;
+  localparam [31:0] CORE0_SNAPSHOT_TRIGGER_CYCLES = 32'd20000;
+  localparam [63:0] CORE0_SNAPSHOT_PC       = 64'h0000_0000_0000_1000;
+  localparam [63:0] CORE0_SNAPSHOT_MEPC     = 64'h0000_0000_0000_1000;
+  localparam [63:0] CORE0_SNAPSHOT_MTVAL    = 64'h0000_0000_0000_0000;
+  localparam [63:0] CORE0_SNAPSHOT_MTVEC    = 64'h0000_0000_0000_0000;
+  localparam [1:0]  CORE0_SNAPSHOT_PM       = 2'b11;
+  localparam [1:0]  CORE0_SNAPSHOT_MPP      = 2'b11;
+  localparam [1:0]  CORE0_SNAPSHOT_FS       = 2'b00;
+  localparam        CORE0_SNAPSHOT_SPP      = 1'b0;
+  localparam        CORE0_SNAPSHOT_MIE_BIT  = 1'b0;
+  localparam        CORE0_SNAPSHOT_MPIE     = 1'b0;
+  localparam        CORE0_SNAPSHOT_SIE_BIT  = 1'b0;
+  localparam        CORE0_SNAPSHOT_SPIE     = 1'b0;
+  localparam        CORE0_SNAPSHOT_MPRV     = 1'b0;
+  localparam        CORE0_SNAPSHOT_MXR      = 1'b0;
+  localparam        CORE0_SNAPSHOT_SUM      = 1'b0;
+  localparam        CORE0_SNAPSHOT_MEIE     = 1'b0;
+  localparam        CORE0_SNAPSHOT_MTIE     = 1'b0;
+  localparam        CORE0_SNAPSHOT_MSIE     = 1'b0;
+  localparam        CORE0_SNAPSHOT_SEIE     = 1'b0;
+  localparam        CORE0_SNAPSHOT_STIE     = 1'b0;
+  localparam        CORE0_SNAPSHOT_SSIE     = 1'b0;
+  localparam        CORE0_SNAPSHOT_M_INTR   = 1'b0;
+  localparam [4:0]  CORE0_SNAPSHOT_M_VECTOR = 5'd0;
+  localparam        CORE0_SNAPSHOT_ME_INT   = 1'b0;
+  localparam        CORE0_SNAPSHOT_MS_INT   = 1'b0;
+  localparam        CORE0_SNAPSHOT_MT_INT   = 1'b0;
+  localparam        CORE0_SNAPSHOT_SE_INT   = 1'b0;
+  localparam        CORE0_SNAPSHOT_SS_INT   = 1'b0;
+  localparam        CORE0_SNAPSHOT_ST_INT   = 1'b0;
+
+  reg [63:0] core0_snapshot_gpr [0:31];
+  reg [31:0] core0_snapshot_gpr_valid;
+  reg [31:0] core0_no_retire_cycles;
+  reg        core0_snapshot_restore_done;
+  reg        core0_snapshot_restore_busy;
+  integer    core0_snapshot_idx;
+
+  function [31:0] core0_had_mv_self_ir;
+    input [4:0] gpr_idx;
+    begin
+      case (gpr_idx[4:0])
+        5'd0  : core0_had_mv_self_ir = 32'h0000_0013;
+        5'd1  : core0_had_mv_self_ir = 32'h0000_8086;
+        5'd2  : core0_had_mv_self_ir = 32'h0000_810a;
+        5'd3  : core0_had_mv_self_ir = 32'h0000_818e;
+        5'd4  : core0_had_mv_self_ir = 32'h0000_8212;
+        5'd5  : core0_had_mv_self_ir = 32'h0000_8296;
+        5'd6  : core0_had_mv_self_ir = 32'h0000_831a;
+        5'd7  : core0_had_mv_self_ir = 32'h0000_839e;
+        5'd8  : core0_had_mv_self_ir = 32'h0000_8422;
+        5'd9  : core0_had_mv_self_ir = 32'h0000_84a6;
+        5'd10 : core0_had_mv_self_ir = 32'h0000_852a;
+        5'd11 : core0_had_mv_self_ir = 32'h0000_85ae;
+        5'd12 : core0_had_mv_self_ir = 32'h0000_8632;
+        5'd13 : core0_had_mv_self_ir = 32'h0000_86b6;
+        5'd14 : core0_had_mv_self_ir = 32'h0000_873a;
+        5'd15 : core0_had_mv_self_ir = 32'h0000_87be;
+        5'd16 : core0_had_mv_self_ir = 32'h0000_8842;
+        5'd17 : core0_had_mv_self_ir = 32'h0000_88c6;
+        5'd18 : core0_had_mv_self_ir = 32'h0000_894a;
+        5'd19 : core0_had_mv_self_ir = 32'h0000_89ce;
+        5'd20 : core0_had_mv_self_ir = 32'h0000_8a52;
+        5'd21 : core0_had_mv_self_ir = 32'h0000_8ad6;
+        5'd22 : core0_had_mv_self_ir = 32'h0000_8b5a;
+        5'd23 : core0_had_mv_self_ir = 32'h0000_8bde;
+        5'd24 : core0_had_mv_self_ir = 32'h0000_8c62;
+        5'd25 : core0_had_mv_self_ir = 32'h0000_8ce6;
+        5'd26 : core0_had_mv_self_ir = 32'h0000_8d6a;
+        5'd27 : core0_had_mv_self_ir = 32'h0000_8dee;
+        5'd28 : core0_had_mv_self_ir = 32'h0000_8e72;
+        5'd29 : core0_had_mv_self_ir = 32'h0000_8ef6;
+        5'd30 : core0_had_mv_self_ir = 32'h0000_8f7a;
+        5'd31 : core0_had_mv_self_ir = 32'h0000_8ffe;
+        default: core0_had_mv_self_ir = 32'h0000_0013;
+      endcase
+    end
+  endfunction
+
+  task core0_force_snapshot_csrs;
+    begin
+      force `CORE0_CP0_REGS.pm               = CORE0_SNAPSHOT_PM;
+      force `CORE0_CP0_REGS.mpp              = CORE0_SNAPSHOT_MPP;
+      force `CORE0_CP0_REGS.fs               = CORE0_SNAPSHOT_FS;
+      force `CORE0_CP0_REGS.spp              = CORE0_SNAPSHOT_SPP;
+      force `CORE0_CP0_REGS.mie_bit          = CORE0_SNAPSHOT_MIE_BIT;
+      force `CORE0_CP0_REGS.mpie             = CORE0_SNAPSHOT_MPIE;
+      force `CORE0_CP0_REGS.sie_bit          = CORE0_SNAPSHOT_SIE_BIT;
+      force `CORE0_CP0_REGS.spie             = CORE0_SNAPSHOT_SPIE;
+      force `CORE0_CP0_REGS.mprv             = CORE0_SNAPSHOT_MPRV;
+      force `CORE0_CP0_REGS.mxr              = CORE0_SNAPSHOT_MXR;
+      force `CORE0_CP0_REGS.sum              = CORE0_SNAPSHOT_SUM;
+      force `CORE0_CP0_REGS.meie             = CORE0_SNAPSHOT_MEIE;
+      force `CORE0_CP0_REGS.mtie             = CORE0_SNAPSHOT_MTIE;
+      force `CORE0_CP0_REGS.msie             = CORE0_SNAPSHOT_MSIE;
+      force `CORE0_CP0_REGS.seie             = CORE0_SNAPSHOT_SEIE;
+      force `CORE0_CP0_REGS.stie             = CORE0_SNAPSHOT_STIE;
+      force `CORE0_CP0_REGS.ssie             = CORE0_SNAPSHOT_SSIE;
+      force `CORE0_CP0_REGS.m_intr           = CORE0_SNAPSHOT_M_INTR;
+      force `CORE0_CP0_REGS.m_vector         = CORE0_SNAPSHOT_M_VECTOR;
+      force `CORE0_CP0_REGS.mtvec_base       = CORE0_SNAPSHOT_MTVEC[63:2];
+      force `CORE0_CP0_REGS.mtvec_mode       = {1'b0, CORE0_SNAPSHOT_MTVEC[0]};
+      force `CORE0_CP0_REGS.mepc_reg         = CORE0_SNAPSHOT_MEPC[63:1];
+      force `CORE0_CP0_REGS.mtval_data       = CORE0_SNAPSHOT_MTVAL;
+      force `CORE0_TOP.biu_cp0_me_int        = CORE0_SNAPSHOT_ME_INT;
+      force `CORE0_TOP.biu_cp0_ms_int        = CORE0_SNAPSHOT_MS_INT;
+      force `CORE0_TOP.biu_cp0_mt_int        = CORE0_SNAPSHOT_MT_INT;
+      force `CORE0_TOP.biu_cp0_se_int        = CORE0_SNAPSHOT_SE_INT;
+      force `CORE0_TOP.biu_cp0_ss_int        = CORE0_SNAPSHOT_SS_INT;
+      force `CORE0_TOP.biu_cp0_st_int        = CORE0_SNAPSHOT_ST_INT;
+    end
+  endtask
+
+  task core0_release_snapshot_csrs;
+    begin
+      release `CORE0_TOP.biu_cp0_st_int;
+      release `CORE0_TOP.biu_cp0_ss_int;
+      release `CORE0_TOP.biu_cp0_se_int;
+      release `CORE0_TOP.biu_cp0_mt_int;
+      release `CORE0_TOP.biu_cp0_ms_int;
+      release `CORE0_TOP.biu_cp0_me_int;
+      release `CORE0_CP0_REGS.mtval_data;
+      release `CORE0_CP0_REGS.mepc_reg;
+      release `CORE0_CP0_REGS.mtvec_mode;
+      release `CORE0_CP0_REGS.mtvec_base;
+      release `CORE0_CP0_REGS.m_vector;
+      release `CORE0_CP0_REGS.m_intr;
+      release `CORE0_CP0_REGS.ssie;
+      release `CORE0_CP0_REGS.stie;
+      release `CORE0_CP0_REGS.seie;
+      release `CORE0_CP0_REGS.msie;
+      release `CORE0_CP0_REGS.mtie;
+      release `CORE0_CP0_REGS.meie;
+      release `CORE0_CP0_REGS.sum;
+      release `CORE0_CP0_REGS.mxr;
+      release `CORE0_CP0_REGS.mprv;
+      release `CORE0_CP0_REGS.spie;
+      release `CORE0_CP0_REGS.sie_bit;
+      release `CORE0_CP0_REGS.mpie;
+      release `CORE0_CP0_REGS.mie_bit;
+      release `CORE0_CP0_REGS.spp;
+      release `CORE0_CP0_REGS.fs;
+      release `CORE0_CP0_REGS.mpp;
+      release `CORE0_CP0_REGS.pm;
+    end
+  endtask
+
+  task core0_restore_one_gpr;
+    input [4:0] gpr_idx;
+    input [63:0] gpr_val;
+    begin
+      force `CORE0_HAD_REGS.wbbr_reg      = gpr_val;
+      force `CORE0_HAD_REGS.ffy           = 1'b1;
+      force `CORE0_HAD_REGS.ir_reg        = core0_had_mv_self_ir(gpr_idx);
+      force `CORE0_HAD_CTRL.ctrl_go_noex  = 1'b1;
+      force `CORE0_TOP.had_ifu_ir_vld     = 1'b1;
+      repeat (2) @(posedge `CPU_CLK);
+      release `CORE0_TOP.had_ifu_ir_vld;
+      release `CORE0_HAD_CTRL.ctrl_go_noex;
+      release `CORE0_HAD_REGS.ir_reg;
+      release `CORE0_HAD_REGS.ffy;
+      release `CORE0_HAD_REGS.wbbr_reg;
+      @(posedge `CPU_CLK);
+    end
+  endtask
+
+  task core0_restore_snapshot;
+    begin
+      $display("[SNAPSHOT] core0 restore start at cycle %0d", cycle_count);
+      force `CORE0_TOP.rtu_yy_xx_dbgon      = 1'b1;
+      force `CORE0_RTU_RETIRE.dbg_mode_on   = 1'b1;
+      core0_force_snapshot_csrs();
+      repeat (2) @(posedge `CPU_CLK);
+
+      for (core0_snapshot_idx = 1; core0_snapshot_idx < 32; core0_snapshot_idx = core0_snapshot_idx + 1) begin
+        if (core0_snapshot_gpr_valid[core0_snapshot_idx]) begin
+          core0_restore_one_gpr(core0_snapshot_idx[4:0], core0_snapshot_gpr[core0_snapshot_idx]);
+        end
+      end
+
+      force `CORE0_HAD_REGS.pc             = CORE0_SNAPSHOT_PC;
+      force `CORE0_HAD_CTRL.ctrl_exit_dbg  = 1'b1;
+      force `CORE0_TOP.had_ifu_pcload      = 1'b1;
+      force `CORE0_TOP.had_yy_xx_exit_dbg  = 1'b1;
+      repeat (2) @(posedge `CPU_CLK);
+
+      release `CORE0_TOP.had_yy_xx_exit_dbg;
+      release `CORE0_TOP.had_ifu_pcload;
+      release `CORE0_HAD_CTRL.ctrl_exit_dbg;
+      release `CORE0_HAD_REGS.pc;
+      repeat (2) @(posedge `CPU_CLK);
+
+      core0_release_snapshot_csrs();
+      release `CORE0_RTU_RETIRE.dbg_mode_on;
+      release `CORE0_TOP.rtu_yy_xx_dbgon;
+
+      $display("[SNAPSHOT] core0 restore done, resume pc = 0x%h", CORE0_SNAPSHOT_PC);
+    end
+  endtask
+
+  initial
+  begin
+    core0_snapshot_gpr_valid = 32'b0;
+    for (core0_snapshot_idx = 0; core0_snapshot_idx < 32; core0_snapshot_idx = core0_snapshot_idx + 1)
+      core0_snapshot_gpr[core0_snapshot_idx] = 64'b0;
+
+    // Fill these from the QEMU architectural snapshot when needed.
+    // Typical minimum set is x1(ra), x2(sp), x3(gp), x4(tp), plus any live a*/s* regs.
+    core0_snapshot_restore_done = 1'b0;
+    core0_snapshot_restore_busy = 1'b0;
+    core0_no_retire_cycles      = 32'b0;
+  end
   
   assign pad_yy_gate_clk_en_b = 1'b1;
   
@@ -208,6 +432,35 @@ module tb();
       cycle_count[31:0] <= 32'b1;
     else 
       cycle_count[31:0] <= cycle_count[31:0] + 1'b1;
+  end
+
+  always @(posedge `CPU_CLK or negedge `CPU_RST)
+  begin
+    if(!`CPU_RST)
+      core0_no_retire_cycles[31:0] <= 32'b0;
+    else if(core0_snapshot_restore_busy || core0_snapshot_restore_done)
+      core0_no_retire_cycles[31:0] <= 32'b0;
+    else if(`tb_retire0 || `tb_retire1 || `tb_retire2)
+      core0_no_retire_cycles[31:0] <= 32'b0;
+    else
+      core0_no_retire_cycles[31:0] <= core0_no_retire_cycles[31:0] + 1'b1;
+  end
+
+  initial
+  begin : auto_restore_core0_snapshot
+    wait(`CPU_RST == 1'b1);
+    forever begin
+      @(posedge `CPU_CLK);
+      if(CORE0_SNAPSHOT_ENABLE
+         && !core0_snapshot_restore_done
+         && !core0_snapshot_restore_busy
+         && (core0_no_retire_cycles[31:0] >= CORE0_SNAPSHOT_TRIGGER_CYCLES)) begin
+        core0_snapshot_restore_busy = 1'b1;
+        core0_restore_snapshot();
+        core0_snapshot_restore_busy = 1'b0;
+        core0_snapshot_restore_done = 1'b1;
+      end
+    end
   end
   
   
