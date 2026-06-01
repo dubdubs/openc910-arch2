@@ -115,6 +115,11 @@ module tb();
   reg [31:0] core0_no_retire_cycles;
   reg        core0_snapshot_restore_done;
   reg        core0_snapshot_restore_busy;
+  reg        hot_shift_smoke_en;
+  reg        hot_shift_smoke_done;
+  reg [63:0] hot_shift_stub_pc;
+  reg [63:0] hot_shift_resume_pc;
+  reg [31:0] hot_shift_switch_cycle;
   integer    core0_snapshot_idx;
 
   function [31:0] core0_had_mv_self_ir;
@@ -279,6 +284,76 @@ module tb();
     end
   endtask
 
+  //-------------------------------------------------------------------------
+  // Switch AXI ownership from virtual side (BFM placeholder) to HW CPU.
+  // Use cpu0_hold to pause the HW core, switch owner, optionally seed resume PC,
+  // then release hold to continue execution.
+  //-------------------------------------------------------------------------
+  task switch_qemu_to_hw;
+    input [63:0] resume_pc;
+    input        force_resume_pc;
+    begin
+      force `CORE0_TOP.rtu_yy_xx_dbgon = 1'b1;
+      force `CORE0_RTU_RETIRE.dbg_mode_on = 1'b1;
+      force `SOC_TOP.cpu0_hold = 1'b1;
+      force `SOC_TOP.cpu_switch_target = 1'b0;
+      force `SOC_TOP.cpu_switch_req = 1'b1;
+      @(posedge clk);
+      release `SOC_TOP.cpu_switch_req;
+
+      wait(`SOC_TOP.cpu_switch_state == 2'b00 && `SOC_TOP.cpu_mux_sel == 1'b0);
+
+      if (force_resume_pc) begin
+        force `CORE0_HAD_REGS.pc = resume_pc;
+        repeat (3) @(posedge `CPU_CLK);
+        release `CORE0_HAD_REGS.pc;
+      end
+
+      repeat (2) @(posedge `CPU_CLK);
+      release `SOC_TOP.cpu_switch_target;
+      release `SOC_TOP.cpu0_hold;
+      release `CORE0_RTU_RETIRE.dbg_mode_on;
+      release `CORE0_TOP.rtu_yy_xx_dbgon;
+    end
+  endtask
+
+  //-------------------------------------------------------------------------
+  // Trampoline-based hot shift helper:
+  // - write x1(ra)=resume_pc
+  // - force pc=stub_pc
+  // - switch AXI owner to HW CPU
+  // - release hold/debug and continue execution from trampoline -> resume_pc
+  //-------------------------------------------------------------------------
+  task switch_qemu_to_hw_trampoline;
+    input [63:0] stub_pc;
+    input [63:0] resume_pc;
+    begin
+      force `CORE0_TOP.rtu_yy_xx_dbgon = 1'b1;
+      force `CORE0_RTU_RETIRE.dbg_mode_on = 1'b1;
+      force `SOC_TOP.cpu0_hold = 1'b1;
+      force `SOC_TOP.cpu0_req_gate = 1'b0;
+
+      core0_restore_one_gpr(5'd1, resume_pc);
+      force `CORE0_HAD_REGS.pc = stub_pc;
+      repeat (2) @(posedge `CPU_CLK);
+
+      force `SOC_TOP.cpu_switch_target = 1'b0;
+      force `SOC_TOP.cpu_switch_req = 1'b1;
+      @(posedge clk);
+      release `SOC_TOP.cpu_switch_req;
+      wait(`SOC_TOP.cpu_switch_state == 2'b00 && `SOC_TOP.cpu_mux_sel == 1'b0);
+
+      release `CORE0_HAD_REGS.pc;
+      force `SOC_TOP.cpu0_req_gate = 1'b1;
+      repeat (2) @(posedge `CPU_CLK);
+      release `SOC_TOP.cpu_switch_target;
+      release `SOC_TOP.cpu0_req_gate;
+      release `SOC_TOP.cpu0_hold;
+      release `CORE0_RTU_RETIRE.dbg_mode_on;
+      release `CORE0_TOP.rtu_yy_xx_dbgon;
+    end
+  endtask
+
   initial
   begin
     core0_snapshot_gpr_valid = 32'b0;
@@ -290,6 +365,14 @@ module tb();
     core0_snapshot_restore_done = 1'b0;
     core0_snapshot_restore_busy = 1'b0;
     core0_no_retire_cycles      = 32'b0;
+    hot_shift_smoke_en          = $test$plusargs("HOT_SHIFT_SMOKE");
+    hot_shift_smoke_done        = 1'b0;
+    hot_shift_stub_pc           = 64'h0;
+    hot_shift_resume_pc         = 64'h0;
+    hot_shift_switch_cycle      = 32'd5000;
+    if ($value$plusargs("HOT_SHIFT_STUB_PC=%h", hot_shift_stub_pc)) begin end
+    if ($value$plusargs("HOT_SHIFT_RESUME_PC=%h", hot_shift_resume_pc)) begin end
+    if ($value$plusargs("HOT_SHIFT_CYCLE=%d", hot_shift_switch_cycle)) begin end
   end
   
   assign pad_yy_gate_clk_en_b = 1'b1;
@@ -459,6 +542,26 @@ module tb();
         core0_restore_snapshot();
         core0_snapshot_restore_busy = 1'b0;
         core0_snapshot_restore_done = 1'b1;
+      end
+    end
+  end
+
+  initial
+  begin : auto_hot_shift_smoke
+    wait(`CPU_RST == 1'b1);
+    if (hot_shift_smoke_en) begin
+      wait(cycle_count[31:0] >= hot_shift_switch_cycle);
+      if (hot_shift_stub_pc == 64'h0 || hot_shift_resume_pc == 64'h0) begin
+        $display("[HOT_SHIFT_SMOKE] ERROR: please set +HOT_SHIFT_STUB_PC=<hex> +HOT_SHIFT_RESUME_PC=<hex>");
+        FILE = $fopen("run_case.report","w");
+        $fwrite(FILE,"TEST FAIL");
+        $finish;
+      end
+      if (!hot_shift_smoke_done) begin
+        $display("[HOT_SHIFT_SMOKE] switch start: stub_pc=0x%h resume_pc=0x%h cycle=%0d",
+                 hot_shift_stub_pc, hot_shift_resume_pc, cycle_count);
+        hot_shift_smoke_done = 1'b1;
+        switch_qemu_to_hw_trampoline(hot_shift_stub_pc, hot_shift_resume_pc);
       end
     end
   end

@@ -236,6 +236,99 @@ wire             wvalid_s1;
 wire             wvalid_s2;            
 wire             wvalid_s3;            
 wire    [39 :0]  xx_intc_vld;          
+reg              cpu_mux_sel;
+reg              cpu_switch_req;
+reg              cpu_switch_target;
+reg     [1  :0]  cpu_switch_state;
+reg              cpu0_clk_gate;
+reg              cpu1_clk_gate;
+reg              cpu0_hold;
+reg              cpu1_hold;
+reg              cpu0_rst_rel;
+reg              cpu1_rst_rel;
+reg              cpu0_req_gate;
+reg              cpu1_req_gate;
+reg     [7  :0]  cpu0_inflight;
+reg     [7  :0]  cpu1_inflight;
+
+wire             cpu0_rst_b_int;
+wire             cpu1_rst_b_int;
+wire             axim_clk_en_0;
+wire             axim_clk_en_1;
+wire             switch_old_done;
+wire             cpu0_is_owner;
+wire             cpu1_is_owner;
+wire             cpu0_req_idle;
+wire             cpu1_req_idle;
+
+wire             biu_pad_arvalid_0_sel;
+wire             biu_pad_awvalid_0_sel;
+wire             biu_pad_wvalid_0_sel;
+wire             biu_pad_bready_0_sel;
+wire             biu_pad_rready_0_sel;
+wire             biu_pad_arvalid_1_sel;
+wire             biu_pad_awvalid_1_sel;
+wire             biu_pad_wvalid_1_sel;
+wire             biu_pad_bready_1_sel;
+wire             biu_pad_rready_1_sel;
+
+wire    [39 :0]  biu_pad_araddr_0;
+wire    [1  :0]  biu_pad_arburst_0;
+wire    [3  :0]  biu_pad_arcache_0;
+wire    [7  :0]  biu_pad_arid_0;
+wire    [7  :0]  biu_pad_arlen_0;
+wire             biu_pad_arlock_0;
+wire    [2  :0]  biu_pad_arprot_0;
+wire    [2  :0]  biu_pad_arsize_0;
+wire             biu_pad_arvalid_0;
+wire    [39 :0]  biu_pad_awaddr_0;
+wire    [1  :0]  biu_pad_awburst_0;
+wire    [3  :0]  biu_pad_awcache_0;
+wire    [7  :0]  biu_pad_awid_0;
+wire    [7  :0]  biu_pad_awlen_0;
+wire             biu_pad_awlock_0;
+wire    [2  :0]  biu_pad_awprot_0;
+wire    [2  :0]  biu_pad_awsize_0;
+wire             biu_pad_awvalid_0;
+wire             biu_pad_bready_0;
+wire    [1  :0]  biu_pad_lpmd_b_0;
+wire             biu_pad_rready_0;
+wire    [127:0]  biu_pad_wdata_0;
+wire    [7  :0]  biu_pad_wid_0;
+wire             biu_pad_wlast_0;
+wire    [15 :0]  biu_pad_wstrb_0;
+wire             biu_pad_wvalid_0;
+wire             had_pad_jtg_tdo_0;
+wire             had_pad_jtg_tdo_en_0;
+
+wire    [39 :0]  biu_pad_araddr_1;
+wire    [1  :0]  biu_pad_arburst_1;
+wire    [3  :0]  biu_pad_arcache_1;
+wire    [7  :0]  biu_pad_arid_1;
+wire    [7  :0]  biu_pad_arlen_1;
+wire             biu_pad_arlock_1;
+wire    [2  :0]  biu_pad_arprot_1;
+wire    [2  :0]  biu_pad_arsize_1;
+wire             biu_pad_arvalid_1;
+wire    [39 :0]  biu_pad_awaddr_1;
+wire    [1  :0]  biu_pad_awburst_1;
+wire    [3  :0]  biu_pad_awcache_1;
+wire    [7  :0]  biu_pad_awid_1;
+wire    [7  :0]  biu_pad_awlen_1;
+wire             biu_pad_awlock_1;
+wire    [2  :0]  biu_pad_awprot_1;
+wire    [2  :0]  biu_pad_awsize_1;
+wire             biu_pad_awvalid_1;
+wire             biu_pad_bready_1;
+wire    [1  :0]  biu_pad_lpmd_b_1;
+wire             biu_pad_rready_1;
+wire    [127:0]  biu_pad_wdata_1;
+wire    [7  :0]  biu_pad_wid_1;
+wire             biu_pad_wlast_1;
+wire    [15 :0]  biu_pad_wstrb_1;
+wire             biu_pad_wvalid_1;
+wire             had_pad_jtg_tdo_1;
+wire             had_pad_jtg_tdo_en_1;
 
 `ifdef PMU_LP_MODE_TEST
 wire             pmu_cpu_pwr_on ; 
@@ -245,36 +338,145 @@ wire             pmu_cpu_save   ;
 wire             pmu_cpu_restore; 
 `endif
 
+localparam [1:0] SW_IDLE  = 2'b00;
+localparam [1:0] SW_FREEZE= 2'b01;
+localparam [1:0] SW_SWITCH= 2'b10;
+
+assign cpu0_rst_b_int = pad_cpu_rst_b & cpu0_rst_rel;
+assign cpu1_rst_b_int = pad_cpu_rst_b & cpu1_rst_rel;
+assign axim_clk_en_0  = axim_clk_en & cpu0_clk_gate & ~cpu0_hold;
+assign axim_clk_en_1  = axim_clk_en & cpu1_clk_gate & ~cpu1_hold;
+assign cpu0_is_owner  = (cpu_mux_sel == 1'b0);
+assign cpu1_is_owner  = (cpu_mux_sel == 1'b1);
+assign cpu0_req_idle  = !biu_pad_arvalid_0 && !biu_pad_awvalid_0 && !biu_pad_wvalid_0;
+assign cpu1_req_idle  = !biu_pad_arvalid_1 && !biu_pad_awvalid_1 && !biu_pad_wvalid_1;
+assign switch_old_done = cpu0_is_owner ? (cpu0_inflight == 8'b0 && cpu0_req_idle)
+                                        : (cpu1_inflight == 8'b0 && cpu1_req_idle);
+
+assign biu_pad_arvalid_0_sel = biu_pad_arvalid_0 & cpu0_req_gate & ~cpu0_hold;
+assign biu_pad_awvalid_0_sel = biu_pad_awvalid_0 & cpu0_req_gate & ~cpu0_hold;
+assign biu_pad_wvalid_0_sel  = biu_pad_wvalid_0 & cpu0_req_gate & ~cpu0_hold;
+assign biu_pad_bready_0_sel  = biu_pad_bready_0 & cpu0_req_gate & ~cpu0_hold;
+assign biu_pad_rready_0_sel  = biu_pad_rready_0 & cpu0_req_gate & ~cpu0_hold;
+assign biu_pad_arvalid_1_sel = biu_pad_arvalid_1 & cpu1_req_gate & ~cpu1_hold;
+assign biu_pad_awvalid_1_sel = biu_pad_awvalid_1 & cpu1_req_gate & ~cpu1_hold;
+assign biu_pad_wvalid_1_sel  = biu_pad_wvalid_1 & cpu1_req_gate & ~cpu1_hold;
+assign biu_pad_bready_1_sel  = biu_pad_bready_1 & cpu1_req_gate & ~cpu1_hold;
+assign biu_pad_rready_1_sel  = biu_pad_rready_1 & cpu1_req_gate & ~cpu1_hold;
+
+always @(posedge per_clk or negedge pad_cpu_rst_b) begin
+  if (!pad_cpu_rst_b) begin
+    cpu_mux_sel      <= 1'b0;
+    cpu_switch_state <= SW_IDLE;
+    cpu_switch_req   <= 1'b0;
+    cpu_switch_target<= 1'b0;
+    cpu0_clk_gate    <= 1'b1;
+    cpu1_clk_gate    <= 1'b0;
+    cpu0_hold        <= 1'b0;
+    cpu1_hold        <= 1'b1;
+    cpu0_rst_rel     <= 1'b1;
+    cpu1_rst_rel     <= 1'b0;
+    cpu0_req_gate    <= 1'b1;
+    cpu1_req_gate    <= 1'b0;
+  end else begin
+    case (cpu_switch_state)
+      SW_IDLE: begin
+        if (cpu_switch_req && (cpu_switch_target != cpu_mux_sel)) begin
+          cpu_switch_state <= SW_FREEZE;
+          if (cpu_mux_sel == 1'b0) begin
+            cpu0_hold <= 1'b1;
+            cpu0_req_gate <= 1'b0;
+          end else begin
+            cpu1_hold <= 1'b1;
+            cpu1_req_gate <= 1'b0;
+          end
+        end
+      end
+      SW_FREEZE: begin
+        if (switch_old_done) begin
+          cpu_switch_state <= SW_SWITCH;
+        end
+      end
+      SW_SWITCH: begin
+        cpu_mux_sel <= cpu_switch_target;
+        if (cpu_switch_target == 1'b0) begin
+          cpu0_clk_gate <= 1'b1;
+          cpu0_hold     <= 1'b1;
+          cpu0_rst_rel  <= 1'b1;
+          cpu0_req_gate <= 1'b1;
+          cpu1_req_gate <= 1'b0;
+          cpu1_clk_gate <= 1'b0;
+          cpu1_hold     <= 1'b1;
+          cpu1_rst_rel  <= 1'b0;
+        end else begin
+          cpu1_clk_gate <= 1'b1;
+          cpu1_hold     <= 1'b1;
+          cpu1_rst_rel  <= 1'b1;
+          cpu1_req_gate <= 1'b1;
+          cpu0_req_gate <= 1'b0;
+          cpu0_clk_gate <= 1'b0;
+          cpu0_hold     <= 1'b1;
+          cpu0_rst_rel  <= 1'b0;
+        end
+        cpu_switch_req   <= 1'b0;
+        cpu_switch_state <= SW_IDLE;
+      end
+      default: cpu_switch_state <= SW_IDLE;
+    endcase
+  end
+end
+
+always @(posedge per_clk or negedge pad_cpu_rst_b) begin
+  if (!pad_cpu_rst_b) begin
+    cpu0_inflight <= 8'b0;
+    cpu1_inflight <= 8'b0;
+  end else begin
+    if (cpu0_is_owner) begin
+      cpu0_inflight <= cpu0_inflight
+        + ((biu_pad_arvalid_0_sel && pad_biu_arready) ? 8'd1 : 8'd0)
+        + ((biu_pad_awvalid_0_sel && pad_biu_awready) ? 8'd1 : 8'd0)
+        - ((pad_biu_rvalid && biu_pad_rready_0_sel && pad_biu_rlast && (cpu0_inflight != 8'b0)) ? 8'd1 : 8'd0)
+        - ((pad_biu_bvalid && biu_pad_bready_0_sel && (cpu0_inflight != 8'b0)) ? 8'd1 : 8'd0);
+    end else begin
+      cpu1_inflight <= cpu1_inflight
+        + ((biu_pad_arvalid_1_sel && pad_biu_arready) ? 8'd1 : 8'd0)
+        + ((biu_pad_awvalid_1_sel && pad_biu_awready) ? 8'd1 : 8'd0)
+        - ((pad_biu_rvalid && biu_pad_rready_1_sel && pad_biu_rlast && (cpu1_inflight != 8'b0)) ? 8'd1 : 8'd0)
+        - ((pad_biu_bvalid && biu_pad_bready_1_sel && (cpu1_inflight != 8'b0)) ? 8'd1 : 8'd0);
+    end
+  end
+end
+
 cpu_sub_system_axi  x_cpu_sub_system_axi (
-  .biu_pad_araddr        (biu_pad_araddr       ),
-  .biu_pad_arburst       (biu_pad_arburst      ),
-  .biu_pad_arcache       (biu_pad_arcache      ),
-  .biu_pad_arid          (biu_pad_arid         ),
-  .biu_pad_arlen         (biu_pad_arlen        ),
-  .biu_pad_arlock        (biu_pad_arlock       ),
-  .biu_pad_arprot        (biu_pad_arprot       ),
-  .biu_pad_arsize        (biu_pad_arsize       ),
-  .biu_pad_arvalid       (biu_pad_arvalid      ),
-  .biu_pad_awaddr        (biu_pad_awaddr       ),
-  .biu_pad_awburst       (biu_pad_awburst      ),
-  .biu_pad_awcache       (biu_pad_awcache      ),
-  .biu_pad_awid          (biu_pad_awid         ),
-  .biu_pad_awlen         (biu_pad_awlen        ),
-  .biu_pad_awlock        (biu_pad_awlock       ),
-  .biu_pad_awprot        (biu_pad_awprot       ),
-  .biu_pad_awsize        (biu_pad_awsize       ),
-  .biu_pad_awvalid       (biu_pad_awvalid      ),
-  .biu_pad_bready        (biu_pad_bready       ),
-  .biu_pad_lpmd_b        (biu_pad_lpmd_b       ),
-  .biu_pad_rready        (biu_pad_rready       ),
-  .biu_pad_wdata         (biu_pad_wdata        ),
-  .biu_pad_wid           (biu_pad_wid          ),
-  .biu_pad_wlast         (biu_pad_wlast        ),
-  .biu_pad_wstrb         (biu_pad_wstrb        ),
-  .biu_pad_wvalid        (biu_pad_wvalid       ),
-  .axim_clk_en           (axim_clk_en          ),
-  .had_pad_jtg_tdo       (had_pad_jtg_tdo      ),
-  .had_pad_jtg_tdo_en    (had_pad_jtg_tdo_en   ),
+  .biu_pad_araddr        (biu_pad_araddr_0     ),
+  .biu_pad_arburst       (biu_pad_arburst_0    ),
+  .biu_pad_arcache       (biu_pad_arcache_0    ),
+  .biu_pad_arid          (biu_pad_arid_0       ),
+  .biu_pad_arlen         (biu_pad_arlen_0      ),
+  .biu_pad_arlock        (biu_pad_arlock_0     ),
+  .biu_pad_arprot        (biu_pad_arprot_0     ),
+  .biu_pad_arsize        (biu_pad_arsize_0     ),
+  .biu_pad_arvalid       (biu_pad_arvalid_0    ),
+  .biu_pad_awaddr        (biu_pad_awaddr_0     ),
+  .biu_pad_awburst       (biu_pad_awburst_0    ),
+  .biu_pad_awcache       (biu_pad_awcache_0    ),
+  .biu_pad_awid          (biu_pad_awid_0       ),
+  .biu_pad_awlen         (biu_pad_awlen_0      ),
+  .biu_pad_awlock        (biu_pad_awlock_0     ),
+  .biu_pad_awprot        (biu_pad_awprot_0     ),
+  .biu_pad_awsize        (biu_pad_awsize_0     ),
+  .biu_pad_awvalid       (biu_pad_awvalid_0    ),
+  .biu_pad_bready        (biu_pad_bready_0     ),
+  .biu_pad_lpmd_b        (biu_pad_lpmd_b_0     ),
+  .biu_pad_rready        (biu_pad_rready_0     ),
+  .biu_pad_wdata         (biu_pad_wdata_0      ),
+  .biu_pad_wid           (biu_pad_wid_0        ),
+  .biu_pad_wlast         (biu_pad_wlast_0      ),
+  .biu_pad_wstrb         (biu_pad_wstrb_0      ),
+  .biu_pad_wvalid        (biu_pad_wvalid_0     ),
+  .axim_clk_en           (axim_clk_en_0        ),
+  .had_pad_jtg_tdo       (had_pad_jtg_tdo_0    ),
+  .had_pad_jtg_tdo_en    (had_pad_jtg_tdo_en_0 ),
   .i_pad_jtg_tms         (i_pad_jtg_tms        ),
   .pad_biu_arready       (fifo_biu_arready     ),
   .pad_biu_awready       (pad_biu_awready      ),
@@ -287,8 +489,8 @@ cpu_sub_system_axi  x_cpu_sub_system_axi (
   .pad_biu_rresp         ({2'b0,pad_biu_rresp} ),
   .pad_biu_rvalid        (pad_biu_rvalid       ),
   .pad_biu_wready        (pad_biu_wready       ),
-  .pad_cpu_rst_b         (pad_cpu_rst_b        ),
-  .pad_yy_dft_clk_rst_b  (pad_cpu_rst_b        ),
+  .pad_cpu_rst_b         (cpu0_rst_b_int       ),
+  .pad_yy_dft_clk_rst_b  (cpu0_rst_b_int       ),
   .pad_had_jtg_tclk      (pad_had_jtg_tclk     ),
   .pad_had_jtg_tdi       (pad_had_jtg_tdi      ),
   .pad_had_jtg_trst_b    (pad_had_jtg_trst_b   ),
@@ -304,6 +506,37 @@ cpu_sub_system_axi  x_cpu_sub_system_axi (
   .xx_intc_vld           (xx_intc_vld          )
 );
 
+// Placeholder AXI master interface for future QEMU masterBFM hookup.
+// Keep channel-1 reserved and idle until masterBFM RTL is integrated.
+assign biu_pad_araddr_1  = 40'b0;
+assign biu_pad_arburst_1 = 2'b0;
+assign biu_pad_arcache_1 = 4'b0;
+assign biu_pad_arid_1    = 8'b0;
+assign biu_pad_arlen_1   = 8'b0;
+assign biu_pad_arlock_1  = 1'b0;
+assign biu_pad_arprot_1  = 3'b0;
+assign biu_pad_arsize_1  = 3'b0;
+assign biu_pad_arvalid_1 = 1'b0;
+assign biu_pad_awaddr_1  = 40'b0;
+assign biu_pad_awburst_1 = 2'b0;
+assign biu_pad_awcache_1 = 4'b0;
+assign biu_pad_awid_1    = 8'b0;
+assign biu_pad_awlen_1   = 8'b0;
+assign biu_pad_awlock_1  = 1'b0;
+assign biu_pad_awprot_1  = 3'b0;
+assign biu_pad_awsize_1  = 3'b0;
+assign biu_pad_awvalid_1 = 1'b0;
+assign biu_pad_wdata_1   = 128'b0;
+assign biu_pad_wid_1     = 8'b0;
+assign biu_pad_wlast_1   = 1'b0;
+assign biu_pad_wstrb_1   = 16'b0;
+assign biu_pad_wvalid_1  = 1'b0;
+assign biu_pad_bready_1  = 1'b0;
+assign biu_pad_rready_1  = 1'b0;
+assign biu_pad_lpmd_b_1  = 2'b11;
+assign had_pad_jtg_tdo_1 = 1'b0;
+assign had_pad_jtg_tdo_en_1 = 1'b0;
+
 assign pad_cpu_rst_b = i_pad_rst_b;
 assign pll_cpu_clk =  cpu_clk;
 
@@ -313,6 +546,35 @@ assign pad_had_jtg_trst_b = i_pad_jtg_trst_b;
 
 assign uart0_sin = i_pad_uart0_sin;
 
+assign biu_pad_araddr  = (cpu_mux_sel == 1'b0) ? biu_pad_araddr_0 : biu_pad_araddr_1;
+assign biu_pad_arburst = (cpu_mux_sel == 1'b0) ? biu_pad_arburst_0 : biu_pad_arburst_1;
+assign biu_pad_arcache = (cpu_mux_sel == 1'b0) ? biu_pad_arcache_0 : biu_pad_arcache_1;
+assign biu_pad_arid    = (cpu_mux_sel == 1'b0) ? biu_pad_arid_0 : biu_pad_arid_1;
+assign biu_pad_arlen   = (cpu_mux_sel == 1'b0) ? biu_pad_arlen_0 : biu_pad_arlen_1;
+assign biu_pad_arlock  = (cpu_mux_sel == 1'b0) ? biu_pad_arlock_0 : biu_pad_arlock_1;
+assign biu_pad_arprot  = (cpu_mux_sel == 1'b0) ? biu_pad_arprot_0 : biu_pad_arprot_1;
+assign biu_pad_arsize  = (cpu_mux_sel == 1'b0) ? biu_pad_arsize_0 : biu_pad_arsize_1;
+assign biu_pad_arvalid = (cpu_mux_sel == 1'b0) ? biu_pad_arvalid_0_sel : biu_pad_arvalid_1_sel;
+assign biu_pad_awaddr  = (cpu_mux_sel == 1'b0) ? biu_pad_awaddr_0 : biu_pad_awaddr_1;
+assign biu_pad_awburst = (cpu_mux_sel == 1'b0) ? biu_pad_awburst_0 : biu_pad_awburst_1;
+assign biu_pad_awcache = (cpu_mux_sel == 1'b0) ? biu_pad_awcache_0 : biu_pad_awcache_1;
+assign biu_pad_awid    = (cpu_mux_sel == 1'b0) ? biu_pad_awid_0 : biu_pad_awid_1;
+assign biu_pad_awlen   = (cpu_mux_sel == 1'b0) ? biu_pad_awlen_0 : biu_pad_awlen_1;
+assign biu_pad_awlock  = (cpu_mux_sel == 1'b0) ? biu_pad_awlock_0 : biu_pad_awlock_1;
+assign biu_pad_awprot  = (cpu_mux_sel == 1'b0) ? biu_pad_awprot_0 : biu_pad_awprot_1;
+assign biu_pad_awsize  = (cpu_mux_sel == 1'b0) ? biu_pad_awsize_0 : biu_pad_awsize_1;
+assign biu_pad_awvalid = (cpu_mux_sel == 1'b0) ? biu_pad_awvalid_0_sel : biu_pad_awvalid_1_sel;
+assign biu_pad_bready  = (cpu_mux_sel == 1'b0) ? biu_pad_bready_0_sel : biu_pad_bready_1_sel;
+assign biu_pad_lpmd_b  = (cpu_mux_sel == 1'b0) ? biu_pad_lpmd_b_0 : biu_pad_lpmd_b_1;
+assign biu_pad_rready  = (cpu_mux_sel == 1'b0) ? biu_pad_rready_0_sel : biu_pad_rready_1_sel;
+assign biu_pad_wdata   = (cpu_mux_sel == 1'b0) ? biu_pad_wdata_0 : biu_pad_wdata_1;
+assign biu_pad_wid     = (cpu_mux_sel == 1'b0) ? biu_pad_wid_0 : biu_pad_wid_1;
+assign biu_pad_wlast   = (cpu_mux_sel == 1'b0) ? biu_pad_wlast_0 : biu_pad_wlast_1;
+assign biu_pad_wstrb   = (cpu_mux_sel == 1'b0) ? biu_pad_wstrb_0 : biu_pad_wstrb_1;
+assign biu_pad_wvalid  = (cpu_mux_sel == 1'b0) ? biu_pad_wvalid_0_sel : biu_pad_wvalid_1_sel;
+
+assign had_pad_jtg_tdo = (cpu_mux_sel == 1'b0) ? had_pad_jtg_tdo_0 : had_pad_jtg_tdo_1;
+assign had_pad_jtg_tdo_en = (cpu_mux_sel == 1'b0) ? had_pad_jtg_tdo_en_0 : had_pad_jtg_tdo_en_1;
 assign o_pad_jtg_tdo = had_pad_jtg_tdo;
 assign o_pad_uart0_sout = uart0_sout;
 
@@ -742,5 +1004,3 @@ err_gen  x_err_gen (
 );
 
 endmodule
-
-
