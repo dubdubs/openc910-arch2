@@ -68,6 +68,30 @@ module top(
   
   wire uart0_sin;
   wire [7:0]b_pad_gpio_porta;
+
+  //-------------------------------------------------------------------------
+  // Switch AXI ownership from virtual side (BFM placeholder) to HW CPU.
+  // Simple variant for Verilator tb.
+  //-------------------------------------------------------------------------
+  task switch_qemu_to_hw;
+    begin
+      force `CPU_TOP.rtu_yy_xx_dbgon = 1'b1;
+      force `CPU_TOP.x_ct_top_0.x_ct_core.x_ct_rtu_top.x_ct_rtu_retire.dbg_mode_on = 1'b1;
+      force `SOC_TOP.cpu0_hold = 1'b1;
+      force `SOC_TOP.cpu_switch_target = 1'b0;
+      force `SOC_TOP.cpu_switch_req = 1'b1;
+      @(posedge clk);
+      release `SOC_TOP.cpu_switch_req;
+
+      wait(`SOC_TOP.cpu_switch_state == 2'b00 && `SOC_TOP.cpu_mux_sel == 1'b0);
+      repeat (2) @(posedge `CPU_CLK);
+
+      release `SOC_TOP.cpu_switch_target;
+      release `SOC_TOP.cpu0_hold;
+      release `CPU_TOP.x_ct_top_0.x_ct_core.x_ct_rtu_top.x_ct_rtu_retire.dbg_mode_on;
+      release `CPU_TOP.rtu_yy_xx_dbgon;
+    end
+  endtask
   
   assign pad_yy_gate_clk_en_b = 1'b1;
   

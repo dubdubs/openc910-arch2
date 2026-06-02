@@ -25,6 +25,9 @@ export CODE_BASE_PATH
 SIM = iverilog
 DUMP = off
 THREADS = 4
+VPI_HOTSHIFT_MODULE = hotshift_vpi
+VPI_CFLAGS = -fPIC -Wall -Wextra -g -O2 -I/home/public/iverilog/include/iverilog
+VPI_LDFLAGS = -shared -L/home/public/iverilog/lib -lveriuser -lvpi
 
 # Generate C++ in executable form
 VERILATOR_FLAGS += -cc --exe
@@ -139,6 +142,7 @@ else
     else
         ifeq ($(SIM), iverilog)
 	  @cd ./work && iverilog $(TIMESCALE) $(SIMULATOR_OPT) $(SIMULATOR_DEF) $(SIM_FILELIST) $(SIM_DUMP) $(SIMULATOR_LOG)
+	  @cd ./work && cc $(VPI_CFLAGS) -o $(VPI_HOTSHIFT_MODULE).vpi ../soc/tb/$(VPI_HOTSHIFT_MODULE).c $(VPI_LDFLAGS)
         else
             ifeq ($(SIM), verilator)
 	      @cd ./work && verilator $(SIMULATOR_OPT) $(SIMULATOR_DEF) $(SIMULATOR_LOG) $(SIM_FILELIST) $(SIM_DUMP)
@@ -214,7 +218,7 @@ else
 		make buildVerilator
 		cd ./work && obj_dir/Vtop	
             else
-	        cd ./work && vvp xuantie_core.vvp 
+	        cd ./work && vvp -M. -m$(VPI_HOTSHIFT_MODULE) xuantie_core.vvp 
             endif
         endif
 endif
