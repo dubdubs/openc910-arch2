@@ -35,10 +35,27 @@ typedef struct HotshiftFileCpuState {
     uint64_t sip;
     uint64_t satp;
     uint64_t sxstatus;
+    uint32_t clint_valid;
+    uint32_t clint_reserved;
+    uint64_t clint_mtime;
+    uint64_t clint_mtimecmp;
+    uint64_t clint_stimecmp;
+    uint32_t clint_msip;
+    uint32_t clint_ssip;
+    uint32_t plic_valid;
+    uint32_t plic_num_sources;
+    uint32_t plic_bitfield_words;
+    uint32_t plic_context_mode;
+    uint32_t plic_threshold;
+    uint32_t plic_context_claim_id;
+    uint32_t plic_pending[8];
+    uint32_t plic_enable[8];
+    uint32_t plic_claimed[8];
+    uint32_t plic_priority[256];
 } HotshiftFileCpuState;
 
 #define HOTSHIFT_FILE_MAGIC 0x48535650u
-#define HOTSHIFT_FILE_VERSION 2u
+#define HOTSHIFT_FILE_VERSION 4u
 
 static void set_u64_by_name(const char *name, uint64_t value)
 {
@@ -78,6 +95,79 @@ static void set_u32_by_name(const char *name, uint32_t value)
 static void set_bit_by_name(const char *name, int value)
 {
     set_u32_by_name(name, value ? 1u : 0u);
+}
+
+static void seed_runtime_platform_state(const HotshiftFileCpuState *state)
+{
+    char namebuf[256];
+    uint32_t source_limit;
+    uint32_t src_idx;
+
+    if (state->clint_valid) {
+        set_u64_by_name(
+            "tb.x_soc.x_cpu_sub_system_axi.pad_cpu_sys_cnt",
+            state->clint_mtime);
+        set_u64_by_name(
+            "tb.x_soc.x_cpu_sub_system_axi.x_rv_integration_platform.x_cpu_top.x_ct_sysio_top.ccvr",
+            state->clint_mtime);
+        set_u64_by_name(
+            "tb.x_soc.x_cpu_sub_system_axi.x_rv_integration_platform.x_cpu_top.x_ct_clint_top.x_ct_clint_func.clint_mtime_reg",
+            state->clint_mtime);
+        set_bit_by_name(
+            "tb.x_soc.x_cpu_sub_system_axi.x_rv_integration_platform.x_cpu_top.x_ct_clint_top.x_ct_clint_func.msip0_reg",
+            (int)state->clint_msip);
+        set_bit_by_name(
+            "tb.x_soc.x_cpu_sub_system_axi.x_rv_integration_platform.x_cpu_top.x_ct_clint_top.x_ct_clint_func.ssip0_reg",
+            (int)state->clint_ssip);
+        set_u32_by_name(
+            "tb.x_soc.x_cpu_sub_system_axi.x_rv_integration_platform.x_cpu_top.x_ct_clint_top.x_ct_clint_func.mtimecmp0_reg",
+            (uint32_t)(state->clint_mtimecmp & 0xffffffffu));
+        set_u32_by_name(
+            "tb.x_soc.x_cpu_sub_system_axi.x_rv_integration_platform.x_cpu_top.x_ct_clint_top.x_ct_clint_func.mtimecmph0_reg",
+            (uint32_t)(state->clint_mtimecmp >> 32));
+        set_u32_by_name(
+            "tb.x_soc.x_cpu_sub_system_axi.x_rv_integration_platform.x_cpu_top.x_ct_clint_top.x_ct_clint_func.stimecmp0_reg",
+            (uint32_t)(state->clint_stimecmp & 0xffffffffu));
+        set_u32_by_name(
+            "tb.x_soc.x_cpu_sub_system_axi.x_rv_integration_platform.x_cpu_top.x_ct_clint_top.x_ct_clint_func.stimecmph0_reg",
+            (uint32_t)(state->clint_stimecmp >> 32));
+    }
+
+    if (!state->plic_valid) {
+        return;
+    }
+
+    source_limit = state->plic_num_sources;
+    if (source_limit > 256u) {
+        source_limit = 256u;
+    }
+
+    for (src_idx = 1; src_idx < source_limit; ++src_idx) {
+        snprintf(
+            namebuf,
+            sizeof(namebuf),
+            "tb.x_soc.x_cpu_sub_system_axi.x_rv_integration_platform.x_cpu_top.x_plic_top.x_plic_kid_busif.INT_KID[%u].x_plic_int_kid.int_priority",
+            src_idx);
+        set_u32_by_name(namebuf, state->plic_priority[src_idx] & 0x1fu);
+
+        snprintf(
+            namebuf,
+            sizeof(namebuf),
+            "tb.x_soc.x_cpu_sub_system_axi.x_rv_integration_platform.x_cpu_top.x_plic_top.x_plic_kid_busif.INT_KID[%u].x_plic_int_kid.int_pending",
+            src_idx);
+        set_bit_by_name(
+            namebuf,
+            (int)((state->plic_pending[src_idx >> 5] >> (src_idx & 31)) & 0x1u));
+
+        snprintf(
+            namebuf,
+            sizeof(namebuf),
+            "tb.x_soc.x_cpu_sub_system_axi.x_rv_integration_platform.x_cpu_top.x_plic_top.x_plic_kid_busif.INT_KID[%u].x_plic_int_kid.int_active",
+            src_idx);
+        set_bit_by_name(
+            namebuf,
+            (int)((state->plic_claimed[src_idx >> 5] >> (src_idx & 31)) & 0x1u));
+    }
 }
 
 static void populate_tb_state(const HotshiftFileCpuState *state)
@@ -184,6 +274,34 @@ static void populate_tb_state(const HotshiftFileCpuState *state)
     set_bit_by_name("tb.core0_snapshot_pmdu",
                     (int)((state->mxstatus >> 10) & 0x1u));
 
+    set_bit_by_name("tb.core0_snapshot_clint_valid", (int)state->clint_valid);
+    set_u64_by_name("tb.core0_snapshot_clint_mtime", state->clint_mtime);
+    set_u64_by_name("tb.core0_snapshot_clint_mtimecmp", state->clint_mtimecmp);
+    set_u64_by_name("tb.core0_snapshot_clint_stimecmp", state->clint_stimecmp);
+    set_bit_by_name("tb.core0_snapshot_clint_msip", (int)state->clint_msip);
+    set_bit_by_name("tb.core0_snapshot_clint_ssip", (int)state->clint_ssip);
+
+    set_bit_by_name("tb.core0_snapshot_plic_valid", (int)state->plic_valid);
+    set_u32_by_name("tb.core0_snapshot_plic_num_sources", state->plic_num_sources);
+    set_u32_by_name("tb.core0_snapshot_plic_bitfield_words", state->plic_bitfield_words);
+    set_u32_by_name("tb.core0_snapshot_plic_context_mode", state->plic_context_mode);
+    set_u32_by_name("tb.core0_snapshot_plic_threshold", state->plic_threshold);
+    set_u32_by_name("tb.core0_snapshot_plic_context_claim_id",
+                    state->plic_context_claim_id);
+    for (i = 0; i < 8; ++i) {
+        snprintf(namebuf, sizeof(namebuf), "tb.core0_snapshot_plic_pending[%d]", i);
+        set_u32_by_name(namebuf, state->plic_pending[i]);
+        snprintf(namebuf, sizeof(namebuf), "tb.core0_snapshot_plic_enable[%d]", i);
+        set_u32_by_name(namebuf, state->plic_enable[i]);
+        snprintf(namebuf, sizeof(namebuf), "tb.core0_snapshot_plic_claimed[%d]", i);
+        set_u32_by_name(namebuf, state->plic_claimed[i]);
+    }
+    for (i = 0; i < 256; ++i) {
+        snprintf(namebuf, sizeof(namebuf), "tb.core0_snapshot_plic_priority[%d]", i);
+        set_u32_by_name(namebuf, state->plic_priority[i]);
+    }
+
+    seed_runtime_platform_state(state);
     set_bit_by_name("tb.core0_snapshot_restore_done", 0);
     set_bit_by_name("tb.core0_snapshot_restore_busy", 0);
     set_bit_by_name("tb.vpi_hotshift_pending", 1);
@@ -250,6 +368,11 @@ static void register_hotshift_vpi_tasks(void)
     tf_data.tfname = "$hotshift_vpi_poll";
     tf_data.calltf = hotshift_vpi_poll_calltf;
     vpi_register_systf(&tf_data);
+}
+
+void hotshift_vpi_startup(void)
+{
+    register_hotshift_vpi_tasks();
 }
 
 void (*vpi_startup_routines[])(void) = {

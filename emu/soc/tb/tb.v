@@ -36,6 +36,7 @@ limitations under the License.
 `define SOC_TOP             tb.x_soc
 `define RTL_MEM             tb.x_soc.x_axi_slave128.x_f_spsram_large
 
+`define CPU_SUB_SYSTEM_AXI  tb.x_soc.x_cpu_sub_system_axi
 `define CPU_TOP             tb.x_soc.x_cpu_sub_system_axi.x_rv_integration_platform.x_cpu_top
 `define tb_retire0          `CPU_TOP.core0_pad_retire0
 `define retire0_pc          `CPU_TOP.core0_pad_retire0_pc[39:0]
@@ -56,6 +57,11 @@ limitations under the License.
 `define CORE0_MMU_TOP       `CORE0_TOP.x_ct_mmu_top
 `define CORE0_MMU_REGS      `CORE0_MMU_TOP.x_ct_mmu_regs
 `define CORE0_RTU_RETIRE    `CORE0_TOP.x_ct_core.x_ct_rtu_top.x_ct_rtu_retire
+`define CORE0_SYSIO_TOP     `CPU_TOP.x_ct_sysio_top
+`define CORE0_CLINT_FUNC    `CPU_TOP.x_ct_clint_top.x_ct_clint_func
+`define CORE0_PLIC_TOP      `CPU_TOP.x_plic_top
+`define CORE0_PLIC_HREG     `CORE0_PLIC_TOP.x_plic_hreg_busif
+`define CORE0_PLIC_KID_BUSIF `CORE0_PLIC_TOP.x_plic_kid_busif
 
 // `define APB_BASE_ADDR       40'h4000000000
 `define APB_BASE_ADDR       40'hb0000000
@@ -82,6 +88,7 @@ module tb();
   //-------------------------------------------------------------------------
   localparam CORE0_SNAPSHOT_ENABLE          = 1'b1;
   localparam [31:0] CORE0_SNAPSHOT_TRIGGER_CYCLES = 32'd20000;
+  localparam [31:0] VPI_HOTSHIFT_POLL_INTERVAL = 32'd1024;
 
   reg [63:0] core0_snapshot_gpr [0:31];
   reg [31:0] core0_snapshot_gpr_valid;
@@ -142,6 +149,22 @@ module tb();
   reg        core0_snapshot_pmdm;
   reg        core0_snapshot_pmds;
   reg        core0_snapshot_pmdu;
+  reg        core0_snapshot_clint_valid;
+  reg [63:0] core0_snapshot_clint_mtime;
+  reg [63:0] core0_snapshot_clint_mtimecmp;
+  reg [63:0] core0_snapshot_clint_stimecmp;
+  reg        core0_snapshot_clint_msip;
+  reg        core0_snapshot_clint_ssip;
+  reg        core0_snapshot_plic_valid;
+  reg [31:0] core0_snapshot_plic_num_sources;
+  reg [31:0] core0_snapshot_plic_bitfield_words;
+  reg [31:0] core0_snapshot_plic_context_mode;
+  reg [31:0] core0_snapshot_plic_threshold;
+  reg [31:0] core0_snapshot_plic_context_claim_id;
+  reg [31:0] core0_snapshot_plic_pending [0:7];
+  reg [31:0] core0_snapshot_plic_enable [0:7];
+  reg [31:0] core0_snapshot_plic_claimed [0:7];
+  reg [31:0] core0_snapshot_plic_priority [0:255];
   reg [31:0] core0_no_retire_cycles;
   reg        core0_snapshot_restore_done;
   reg        core0_snapshot_restore_busy;
@@ -149,12 +172,16 @@ module tb();
   reg        vpi_hotshift_pending;
   reg        vpi_hotshift_busy;
   reg        vpi_hotshift_done;
+  reg        vpi_hotshift_prehold_active;
   reg        hot_shift_smoke_en;
   reg        hot_shift_smoke_done;
   reg [63:0] hot_shift_stub_pc;
   reg [63:0] hot_shift_resume_pc;
   reg [31:0] hot_shift_switch_cycle;
+  reg [31:0] vpi_hotshift_poll_count;
   integer    core0_snapshot_idx;
+  integer    core0_snapshot_word_idx;
+  integer    core0_snapshot_irq_idx;
 
   function [31:0] core0_had_mv_self_ir;
     input [4:0] gpr_idx;
@@ -329,6 +356,125 @@ module tb();
     end
   endtask
 
+  task core0_restore_snapshot_platform_irq;
+    integer word_idx;
+    begin
+      if (core0_snapshot_clint_valid) begin
+        $display("[SNAPSHOT] restore CLINT: mtime=0x%h mtimecmp=0x%h stimecmp=0x%h msip=%0d ssip=%0d",
+                 core0_snapshot_clint_mtime,
+                 core0_snapshot_clint_mtimecmp,
+                 core0_snapshot_clint_stimecmp,
+                 core0_snapshot_clint_msip,
+                 core0_snapshot_clint_ssip);
+        force `CPU_SUB_SYSTEM_AXI.pad_cpu_sys_cnt     = core0_snapshot_clint_mtime;
+        force `CORE0_SYSIO_TOP.ccvr                   = core0_snapshot_clint_mtime;
+        force `CORE0_CLINT_FUNC.clint_mtime_reg       = core0_snapshot_clint_mtime;
+        force `CORE0_CLINT_FUNC.msip0_reg             = core0_snapshot_clint_msip;
+        force `CORE0_CLINT_FUNC.ssip0_reg             = core0_snapshot_clint_ssip;
+        force `CORE0_CLINT_FUNC.mtimecmp0_reg         = core0_snapshot_clint_mtimecmp[31:0];
+        force `CORE0_CLINT_FUNC.mtimecmph0_reg        = core0_snapshot_clint_mtimecmp[63:32];
+        force `CORE0_CLINT_FUNC.stimecmp0_reg         = core0_snapshot_clint_stimecmp[31:0];
+        force `CORE0_CLINT_FUNC.stimecmph0_reg        = core0_snapshot_clint_stimecmp[63:32];
+        repeat (2) @(posedge `CPU_CLK);
+        release `CORE0_CLINT_FUNC.stimecmph0_reg;
+        release `CORE0_CLINT_FUNC.stimecmp0_reg;
+        release `CORE0_CLINT_FUNC.mtimecmph0_reg;
+        release `CORE0_CLINT_FUNC.mtimecmp0_reg;
+        release `CORE0_CLINT_FUNC.ssip0_reg;
+        release `CORE0_CLINT_FUNC.msip0_reg;
+        release `CORE0_CLINT_FUNC.clint_mtime_reg;
+        release `CORE0_SYSIO_TOP.ccvr;
+        release `CPU_SUB_SYSTEM_AXI.pad_cpu_sys_cnt;
+      end
+
+      if (core0_snapshot_plic_valid) begin
+        $display("[SNAPSHOT] restore PLIC: mode=%0d threshold=0x%0h claim_id=%0d words=%0d sources=%0d",
+                 core0_snapshot_plic_context_mode,
+                 core0_snapshot_plic_threshold,
+                 core0_snapshot_plic_context_claim_id,
+                 core0_snapshot_plic_bitfield_words,
+                 core0_snapshot_plic_num_sources);
+        if (core0_snapshot_plic_context_mode == 32'd1) begin
+          force `CORE0_PLIC_HREG.hart_sth_flop[0]   = core0_snapshot_plic_threshold[4:0];
+          force `CORE0_PLIC_HREG.hart_sclaim_flop[0] = core0_snapshot_plic_context_claim_id;
+          if (core0_snapshot_plic_bitfield_words > 0)
+            force `CORE0_PLIC_HREG.hart_sie_flop[0][31:0] = core0_snapshot_plic_enable[0];
+          if (core0_snapshot_plic_bitfield_words > 1)
+            force `CORE0_PLIC_HREG.hart_sie_flop[0][63:32] = core0_snapshot_plic_enable[1];
+          if (core0_snapshot_plic_bitfield_words > 2)
+            force `CORE0_PLIC_HREG.hart_sie_flop[0][95:64] = core0_snapshot_plic_enable[2];
+          if (core0_snapshot_plic_bitfield_words > 3)
+            force `CORE0_PLIC_HREG.hart_sie_flop[0][127:96] = core0_snapshot_plic_enable[3];
+          if (core0_snapshot_plic_bitfield_words > 4)
+            force `CORE0_PLIC_HREG.hart_sie_flop[0][159:128] = core0_snapshot_plic_enable[4];
+          if (core0_snapshot_plic_bitfield_words > 5)
+            force `CORE0_PLIC_HREG.hart_sie_flop[0][191:160] = core0_snapshot_plic_enable[5];
+          if (core0_snapshot_plic_bitfield_words > 6)
+            force `CORE0_PLIC_HREG.hart_sie_flop[0][223:192] = core0_snapshot_plic_enable[6];
+          if (core0_snapshot_plic_bitfield_words > 7)
+            force `CORE0_PLIC_HREG.hart_sie_flop[0][255:224] = core0_snapshot_plic_enable[7];
+          repeat (2) @(posedge `CPU_CLK);
+          if (core0_snapshot_plic_bitfield_words > 0)
+            release `CORE0_PLIC_HREG.hart_sie_flop[0][31:0];
+          if (core0_snapshot_plic_bitfield_words > 1)
+            release `CORE0_PLIC_HREG.hart_sie_flop[0][63:32];
+          if (core0_snapshot_plic_bitfield_words > 2)
+            release `CORE0_PLIC_HREG.hart_sie_flop[0][95:64];
+          if (core0_snapshot_plic_bitfield_words > 3)
+            release `CORE0_PLIC_HREG.hart_sie_flop[0][127:96];
+          if (core0_snapshot_plic_bitfield_words > 4)
+            release `CORE0_PLIC_HREG.hart_sie_flop[0][159:128];
+          if (core0_snapshot_plic_bitfield_words > 5)
+            release `CORE0_PLIC_HREG.hart_sie_flop[0][191:160];
+          if (core0_snapshot_plic_bitfield_words > 6)
+            release `CORE0_PLIC_HREG.hart_sie_flop[0][223:192];
+          if (core0_snapshot_plic_bitfield_words > 7)
+            release `CORE0_PLIC_HREG.hart_sie_flop[0][255:224];
+          release `CORE0_PLIC_HREG.hart_sclaim_flop[0];
+          release `CORE0_PLIC_HREG.hart_sth_flop[0];
+        end else begin
+          force `CORE0_PLIC_HREG.hart_mth_flop[0]   = core0_snapshot_plic_threshold[4:0];
+          force `CORE0_PLIC_HREG.hart_mclaim_flop[0] = core0_snapshot_plic_context_claim_id;
+          if (core0_snapshot_plic_bitfield_words > 0)
+            force `CORE0_PLIC_HREG.hart_mie_flop[0][31:0] = core0_snapshot_plic_enable[0];
+          if (core0_snapshot_plic_bitfield_words > 1)
+            force `CORE0_PLIC_HREG.hart_mie_flop[0][63:32] = core0_snapshot_plic_enable[1];
+          if (core0_snapshot_plic_bitfield_words > 2)
+            force `CORE0_PLIC_HREG.hart_mie_flop[0][95:64] = core0_snapshot_plic_enable[2];
+          if (core0_snapshot_plic_bitfield_words > 3)
+            force `CORE0_PLIC_HREG.hart_mie_flop[0][127:96] = core0_snapshot_plic_enable[3];
+          if (core0_snapshot_plic_bitfield_words > 4)
+            force `CORE0_PLIC_HREG.hart_mie_flop[0][159:128] = core0_snapshot_plic_enable[4];
+          if (core0_snapshot_plic_bitfield_words > 5)
+            force `CORE0_PLIC_HREG.hart_mie_flop[0][191:160] = core0_snapshot_plic_enable[5];
+          if (core0_snapshot_plic_bitfield_words > 6)
+            force `CORE0_PLIC_HREG.hart_mie_flop[0][223:192] = core0_snapshot_plic_enable[6];
+          if (core0_snapshot_plic_bitfield_words > 7)
+            force `CORE0_PLIC_HREG.hart_mie_flop[0][255:224] = core0_snapshot_plic_enable[7];
+          repeat (2) @(posedge `CPU_CLK);
+          if (core0_snapshot_plic_bitfield_words > 0)
+            release `CORE0_PLIC_HREG.hart_mie_flop[0][31:0];
+          if (core0_snapshot_plic_bitfield_words > 1)
+            release `CORE0_PLIC_HREG.hart_mie_flop[0][63:32];
+          if (core0_snapshot_plic_bitfield_words > 2)
+            release `CORE0_PLIC_HREG.hart_mie_flop[0][95:64];
+          if (core0_snapshot_plic_bitfield_words > 3)
+            release `CORE0_PLIC_HREG.hart_mie_flop[0][127:96];
+          if (core0_snapshot_plic_bitfield_words > 4)
+            release `CORE0_PLIC_HREG.hart_mie_flop[0][159:128];
+          if (core0_snapshot_plic_bitfield_words > 5)
+            release `CORE0_PLIC_HREG.hart_mie_flop[0][191:160];
+          if (core0_snapshot_plic_bitfield_words > 6)
+            release `CORE0_PLIC_HREG.hart_mie_flop[0][223:192];
+          if (core0_snapshot_plic_bitfield_words > 7)
+            release `CORE0_PLIC_HREG.hart_mie_flop[0][255:224];
+          release `CORE0_PLIC_HREG.hart_mclaim_flop[0];
+          release `CORE0_PLIC_HREG.hart_mth_flop[0];
+        end
+      end
+    end
+  endtask
+
   task core0_restore_one_gpr;
     input [4:0] gpr_idx;
     input [63:0] gpr_val;
@@ -348,13 +494,41 @@ module tb();
     end
   endtask
 
+  task core0_cleanup_frontend_residual_state;
+    begin
+      $display("[SNAPSHOT] clear frontend residual state: icache/btb/bht/ind_btb/tlb");
+      force `CORE0_CP0_TOP.cp0_ifu_icache_pref_en = 1'b0;
+      force `CORE0_CP0_TOP.cp0_ifu_icache_inv     = 1'b1;
+      force `CORE0_CP0_TOP.cp0_ifu_btb_inv        = 1'b1;
+      force `CORE0_CP0_TOP.cp0_ifu_bht_inv        = 1'b1;
+      force `CORE0_CP0_TOP.cp0_ifu_ind_btb_inv    = 1'b1;
+      force `CORE0_CP0_TOP.cp0_mmu_tlb_all_inv    = 1'b1;
+
+      wait(`CORE0_CP0_TOP.ifu_cp0_icache_inv_done
+        && `CORE0_CP0_TOP.ifu_cp0_btb_inv_done
+        && `CORE0_CP0_TOP.ifu_cp0_bht_inv_done
+        && `CORE0_CP0_TOP.ifu_cp0_ind_btb_inv_done
+        && `CORE0_CP0_TOP.mmu_cp0_tlb_done);
+      repeat (2) @(posedge `CPU_CLK);
+
+      release `CORE0_CP0_TOP.cp0_mmu_tlb_all_inv;
+      release `CORE0_CP0_TOP.cp0_ifu_ind_btb_inv;
+      release `CORE0_CP0_TOP.cp0_ifu_bht_inv;
+      release `CORE0_CP0_TOP.cp0_ifu_btb_inv;
+      release `CORE0_CP0_TOP.cp0_ifu_icache_inv;
+      release `CORE0_CP0_TOP.cp0_ifu_icache_pref_en;
+    end
+  endtask
+
   task core0_restore_snapshot;
     begin
       $display("[SNAPSHOT] core0 restore start at cycle %0d", cycle_count);
       force `CORE0_TOP.rtu_yy_xx_dbgon      = 1'b1;
       force `CORE0_RTU_RETIRE.dbg_mode_on   = 1'b1;
+      core0_cleanup_frontend_residual_state();
       core0_force_snapshot_csrs();
       repeat (2) @(posedge `CPU_CLK);
+      core0_restore_snapshot_platform_irq();
 
       for (core0_snapshot_idx = 1; core0_snapshot_idx < 32; core0_snapshot_idx = core0_snapshot_idx + 1) begin
         if (core0_snapshot_gpr_valid[core0_snapshot_idx]) begin
@@ -409,6 +583,10 @@ module tb();
 
       repeat (2) @(posedge `CPU_CLK);
       release `SOC_TOP.cpu_switch_target;
+      if (vpi_hotshift_prehold_active) begin
+        release `SOC_TOP.cpu0_req_gate;
+        vpi_hotshift_prehold_active = 1'b0;
+      end
       release `SOC_TOP.cpu0_hold;
       release `CORE0_RTU_RETIRE.dbg_mode_on;
       release `CORE0_TOP.rtu_yy_xx_dbgon;
@@ -457,6 +635,18 @@ module tb();
     core0_snapshot_gpr_valid = 32'b0;
     for (core0_snapshot_idx = 0; core0_snapshot_idx < 32; core0_snapshot_idx = core0_snapshot_idx + 1)
       core0_snapshot_gpr[core0_snapshot_idx] = 64'b0;
+    for (core0_snapshot_word_idx = 0;
+         core0_snapshot_word_idx < 8;
+         core0_snapshot_word_idx = core0_snapshot_word_idx + 1) begin
+      core0_snapshot_plic_pending[core0_snapshot_word_idx] = 32'b0;
+      core0_snapshot_plic_enable[core0_snapshot_word_idx] = 32'b0;
+      core0_snapshot_plic_claimed[core0_snapshot_word_idx] = 32'b0;
+    end
+    for (core0_snapshot_irq_idx = 0;
+         core0_snapshot_irq_idx < 256;
+         core0_snapshot_irq_idx = core0_snapshot_irq_idx + 1) begin
+      core0_snapshot_plic_priority[core0_snapshot_irq_idx] = 32'b0;
+    end
 
     // Fill these from the QEMU architectural snapshot when needed.
     // Typical minimum set is x1(ra), x2(sp), x3(gp), x4(tp), plus any live a*/s* regs.
@@ -520,10 +710,24 @@ module tb();
     core0_snapshot_pmdm         = 1'b0;
     core0_snapshot_pmds         = 1'b0;
     core0_snapshot_pmdu         = 1'b0;
+    core0_snapshot_clint_valid  = 1'b0;
+    core0_snapshot_clint_mtime  = 64'b0;
+    core0_snapshot_clint_mtimecmp = 64'hffff_ffff_ffff_ffff;
+    core0_snapshot_clint_stimecmp = 64'hffff_ffff_ffff_ffff;
+    core0_snapshot_clint_msip   = 1'b0;
+    core0_snapshot_clint_ssip   = 1'b0;
+    core0_snapshot_plic_valid   = 1'b0;
+    core0_snapshot_plic_num_sources = 32'b0;
+    core0_snapshot_plic_bitfield_words = 32'b0;
+    core0_snapshot_plic_context_mode = 32'b0;
+    core0_snapshot_plic_threshold = 32'b0;
+    core0_snapshot_plic_context_claim_id = 32'b0;
     vpi_hotshift_en             = $test$plusargs("VPI_HOTSHIFT");
     vpi_hotshift_pending        = 1'b0;
     vpi_hotshift_busy           = 1'b0;
     vpi_hotshift_done           = 1'b0;
+    vpi_hotshift_prehold_active = 1'b0;
+    vpi_hotshift_poll_count     = 32'b0;
     hot_shift_smoke_en          = $test$plusargs("HOT_SHIFT_SMOKE");
     hot_shift_smoke_done        = 1'b0;
     hot_shift_stub_pc           = 64'h0;
@@ -532,6 +736,11 @@ module tb();
     if ($value$plusargs("HOT_SHIFT_STUB_PC=%h", hot_shift_stub_pc)) begin end
     if ($value$plusargs("HOT_SHIFT_RESUME_PC=%h", hot_shift_resume_pc)) begin end
     if ($value$plusargs("HOT_SHIFT_CYCLE=%d", hot_shift_switch_cycle)) begin end
+    if (vpi_hotshift_en) begin
+      force `SOC_TOP.cpu0_hold = 1'b1;
+      force `SOC_TOP.cpu0_req_gate = 1'b0;
+      vpi_hotshift_prehold_active = 1'b1;
+    end
   end
   
   assign pad_yy_gate_clk_en_b = 1'b1;
@@ -688,8 +897,25 @@ module tb();
       core0_no_retire_cycles[31:0] <= core0_no_retire_cycles[31:0] + 1'b1;
   end
 
+  always @(posedge `CPU_CLK or negedge `CPU_RST)
+  begin
+    if(!`CPU_RST)
+      vpi_hotshift_poll_count[31:0] <= 32'b0;
+    else if(vpi_hotshift_en && !vpi_hotshift_done) begin
+      if(vpi_hotshift_poll_count[31:0] >= VPI_HOTSHIFT_POLL_INTERVAL - 1'b1)
+        vpi_hotshift_poll_count[31:0] <= 32'b0;
+      else
+        vpi_hotshift_poll_count[31:0] <= vpi_hotshift_poll_count[31:0] + 1'b1;
+    end
+    else
+      vpi_hotshift_poll_count[31:0] <= 32'b0;
+  end
+
   always @(posedge `CPU_CLK) begin
-    if (`CPU_RST && vpi_hotshift_en && !vpi_hotshift_done) begin
+    if (`CPU_RST
+        && vpi_hotshift_en
+        && !vpi_hotshift_done
+        && (vpi_hotshift_poll_count[31:0] == VPI_HOTSHIFT_POLL_INTERVAL - 1'b1)) begin
       $hotshift_vpi_poll();
     end
   end
